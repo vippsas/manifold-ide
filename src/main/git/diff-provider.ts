@@ -33,12 +33,14 @@ export class DiffProvider {
 
     const diffParts: string[] = []
 
-    // Compare the tracked working tree directly to the base branch without mutating the index.
+    // Limit the tracked patch before buffering it or sending it over IPC.
     try {
-      const trackedDiff = await gitExec(['diff', '--find-renames', baseBranch], worktreePath)
+      const trackedDiff = await gitExec(['diff', '--find-renames', baseBranch], worktreePath, {
+        maxOutputBytes: DIFF_MAX_BUFFER,
+      })
       if (trackedDiff) diffParts.push(trackedDiff.trimEnd())
     } catch {
-      // May fail if no commits yet on branch; continue
+      // The changed file list is fetched separately, including when the patch exceeds the limit.
     }
 
     const untrackedFiles = await this.listUntrackedFiles(worktreePath)

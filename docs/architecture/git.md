@@ -1,7 +1,7 @@
 ---
 description: How Manifold creates, lists, and removes git worktrees, checks out branches/PRs, persists per-session worktree meta, and runs raw git/gh for commits, diffs, and PR creation.
 covers: [src/main/git]
-updated: 2026-11-10
+updated: 2026-11-26
 owner: see .github/CODEOWNERS
 ---
 
@@ -35,9 +35,11 @@ opening PRs. It is called from `src/main/workspace` (create/remove) and `src/mai
 
 ## How it works
 
-**Raw exec.** `gitExec()` (`git-exec.ts:8`) is a thin `spawn('git', …)` wrapper with
+**Raw exec.** `gitExec()` (`git-exec.ts:19`) is a thin `spawn('git', …)` wrapper with
 `stdio: ['ignore', 'pipe', 'pipe']` — explicit stdio avoids Electron `EBADF` issues from a
 non-TTY context. It throws `git <subcommand> failed (code N): <stderr>` on failure.
+For commands with `maxOutputBytes`, it stops Git and rejects when stdout and stderr together
+exceed the budget.
 Several call sites use Node's `execFile` directly instead (`git-operations.ts`,
 `pr-creator.ts`, and the untracked-file path in `diff-provider.ts`) when they need a larger
 `maxBuffer` or to capture exit-code details.
@@ -120,13 +122,15 @@ real-git tests in `branch-checkout-manager.freshness.test.ts`.
 
 **Diffs and PRs.** `DiffProvider` (`diff-provider.ts:18`) computes the diff, changed-file
 list, and numstat against `baseBranch` by comparing the working tree directly to the base ref
-(no index mutation), and appends untracked files via `ls-files --others` + `diff --no-index`
-— one spawn per file, so the loop is budgeted (`diff-provider.ts:44`): it stops after
+(no index mutation). It caps tracked diff output at 10 MiB while Git is running
+(`diff-provider.ts:38`). When the output exceeds the limit, the combined preview omits
+the tracked patch. The changed file list still includes the tracked changes. It appends
+untracked diffs via `ls-files --others` + `diff --no-index`. That loop stops after
 `MAX_UNTRACKED_DIFF_FILES` (200) files or `MAX_UNTRACKED_DIFF_CHARS` (5 MiB) of buffered text.
 `getChangedFiles` also tags provenance: it cross-checks the two-dot file list against this
 worktree's *own* changes (`getOwnChangedPaths` — committed since the merge-base `<base>...HEAD`
 plus uncommitted `git diff HEAD`) and sets `FileChange.foreignWorktree` on files that differ
-only because the base branch advanced — i.e. were changed in another worktree (`diff-provider.ts:107`).
+only because the base branch advanced — i.e. were changed in another worktree (`diff-provider.ts:109`).
 `GitOperationsManager` (`git-operations.ts:24`) commits (delegating to
 `commitManagedWorktree`), fast-forwards the base branch (`fetchAndUpdate`,
 `git-operations.ts:57` — `merge --ff-only` in whichever worktree has the base
@@ -151,7 +155,7 @@ accepts the stored PR URL and parses `gh pr view <url> --json state,mergedAt`, t
 - `viewPullRequestStatus` — `pr-status.ts:12`. Checks one stored PR URL and returns normalized `open`/`closed`/`merged`/`unknown` state plus `mergedAt`.
 - `DiffProvider` — `diff-provider.ts:18`. `getDiff`, `getDiffStats`, `getChangedFiles`, `getOriginalContent`.
 - `generateBranchName` — `branch-namer.ts:24`. `<repo>/<slug>`, deduplicated with a numeric suffix.
-- `gitExec` — `git-exec.ts:8`. The shared low-level git runner; takes an optional `timeoutMs` that `SIGKILL`s the child.
+- `gitExec` — `git-exec.ts:19`. The shared Git runner can stop the child when a configured timeout or output limit is reached.
 - `withRepoLock` — `repo-lock.ts`. Per-repo promise queue that serializes mutating git operations on the same repo path.
 
 ## Interactions

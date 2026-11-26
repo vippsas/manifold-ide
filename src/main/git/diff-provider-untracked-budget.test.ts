@@ -33,7 +33,7 @@ function queueSpawn(stdout: string): void {
   spawnMock.mockImplementationOnce(() => {
     const emitter = new EventEmitter()
     const stdoutEmitter = new EventEmitter()
-    Object.assign(emitter, { stdout: stdoutEmitter, stderr: new EventEmitter() })
+    Object.assign(emitter, { stdout: stdoutEmitter, stderr: new EventEmitter(), kill: vi.fn() })
     process.nextTick(() => {
       if (stdout) stdoutEmitter.emit('data', Buffer.from(stdout))
       emitter.emit('close', 0)
@@ -62,15 +62,28 @@ describe('DiffProvider.getDiff untracked-file budget', () => {
     provider = new DiffProvider()
   })
 
-  it('diffs every untracked file when there are only a few', async () => {
-    queueSpawn('') // tracked diff
+  it('includes the tracked patch and every untracked diff within budget', async () => {
+    queueSpawn('diff --git a/tracked.txt b/tracked.txt\n')
     queueSpawn(untrackedFiles(3))
     answerUntrackedDiffsWith((file) => `diff --git a/${file} b/${file}`)
 
     const diff = await provider.getDiff('/worktree', 'main')
 
     expect(execFileMock).toHaveBeenCalledTimes(3)
-    expect(diff.split('\n')).toHaveLength(3)
+    expect(diff.split('\n')).toHaveLength(4)
+    expect(diff).toMatch(/^diff --git a\/tracked\.txt b\/tracked\.txt\n/)
+  })
+
+  it('keeps untracked previews when a tracked diff exceeds the output budget', async () => {
+    queueSpawn('x'.repeat(10 * 1024 * 1024 + 1))
+    queueSpawn(untrackedFiles(1))
+    answerUntrackedDiffsWith((file) => `diff --git a/${file} b/${file}`)
+
+    const diff = await provider.getDiff('/worktree', 'main')
+
+    expect(diff.length).toBeLessThan(100)
+    expect(diff).toBe('diff --git a/target/debug/file-0.o b/target/debug/file-0.o')
+    expect(spawnMock.mock.results[0].value.kill).toHaveBeenCalledWith('SIGKILL')
   })
 
   it('stops spawning a diff per file once the file budget is spent', async () => {

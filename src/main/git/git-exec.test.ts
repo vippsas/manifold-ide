@@ -53,3 +53,28 @@ describe('gitExec timeout', () => {
     await expect(gitExec(['status'], '/repo', { timeoutMs: 5000 })).resolves.toBe('done\n')
   })
 })
+
+describe('gitExec output limit', () => {
+  it('returns output that fits the byte limit', async () => {
+    mockSpawn.mockReturnValueOnce(fastChild('été'))
+
+    await expect(gitExec(['diff'], '/repo', { maxOutputBytes: 5 })).resolves.toBe('été')
+  })
+
+  it('kills the child when its combined output exceeds the byte limit', async () => {
+    const child = hangingChild()
+    mockSpawn.mockReturnValueOnce(child)
+    const result = gitExec(['diff'], '/repo', { maxOutputBytes: 5 })
+
+    const stdout = child.stdout as EventEmitter
+    const stderr = child.stderr as EventEmitter
+    stdout.emit('data', Buffer.from('été'))
+    expect(child.killed).toBe(false)
+    stderr.emit('data', Buffer.from('!'))
+    // A successful child exit still cannot return a partial patch.
+    child.emit('close', 0)
+
+    await expect(result).rejects.toThrow('git diff exceeded the 5 byte output limit')
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+  })
+})
